@@ -68,19 +68,9 @@ streamlit run 05_app/app.py
 
 Lien HuggingFace Spaces : *à compléter en semaine 3*
 
-## Équipe
-
-- Membre A — Data engineering & analyse
-- Membre B — Modélisation & évaluation
-- Membre C — Application, déploiement & livrables
-
 ## Stack technique
 
 Python 3.10+, PyTorch, Transformers, OpenCLIP, scikit-learn, XGBoost, Diffusers, Streamlit, SHAP.
-
-## Encadrement
-
-Antoine Couloumy — acouloumy@dylogy.com
 
 ## Licence
 
