@@ -1,0 +1,3 @@
+# Packages systeme necessaires sur HuggingFace Spaces (Debian-based)
+libgl1
+libglib2.0-0

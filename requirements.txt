@@ -38,6 +38,10 @@ python-dotenv>=1.0
 shap>=0.45
 grad-cam>=1.5               # pytorch-grad-cam
 
+# Texte (NER, LLM-as-judge)
+spacy>=3.7
+# Apres install : python -m spacy download fr_core_news_md
+
 # App et deploiement
 streamlit>=1.32
 streamlit-image-comparison>=0.0.4   # comparaison image originale vs heatmap GradCAM

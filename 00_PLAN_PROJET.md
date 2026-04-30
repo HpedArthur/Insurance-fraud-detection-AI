@@ -19,14 +19,32 @@ L'enjeu pour l'assureur est double :
 
 ### 1.2 Hypothèse de travail
 
-Un pipeline combinant un **encodeur visuel pré-entraîné** (CLIP), un **LMM open-source** pour l'analyse sémantique de scène, et un **classifieur supervisé léger** entraîné sur les embeddings, permet de discriminer une photo authentique d'une photo générée par IA avec une performance suffisante pour être déployable en première ligne de tri (avant escalade humaine).
+L'**axe principal** du projet est la détection des images générées par IA. La détection sur le texte de déclaration est un **complément** qui enrichit la décision et rend la démo réaliste, mais ne porte pas la valeur ajoutée scientifique du projet.
+
+Le pipeline cible produit deux scores distincts :
+
+1. **Score image (principal)** — Calculé par un classifieur supervisé sur des features extraites de la photo seule : embedding CLIP ViT-L/14, captions et scores VQA de BLIP-2, scores structurés de LLaVA-1.5, métadonnées EXIF. C'est ce score qui est utilisé pour mesurer la qualité scientifique du modèle (ROC-AUC, F1, recall sur la classe « image générée »).
+
+2. **Score multimodal (enrichi)** — Combine le score image avec des features texte (handcrafted + Mistral-7B en mode *LLM-as-judge*) extraites de la déclaration de l'assuré. Permet d'arbitrer les cas frontières et apporte la dimension métier réaliste (cohérence entre ce qui est décrit et ce qui est montré).
+
+Le système prend en entrée :
+- **Une photo** prétendant illustrer le sinistre (objet de l'analyse principale),
+- **Un texte de déclaration** décrivant le sinistre (date, lieu, circonstances, montant estimé) — optionnel.
+
+et produit en sortie :
+- Un **score image** dans [0, 1],
+- Un **score multimodal** dans [0, 1] (si déclaration fournie),
+- Une **décision** (Légitime / À expertiser / Fraude probable) basée sur le score multimodal s'il est disponible, sinon sur le score image,
+- Une **explication interprétable** : heatmap GradCAM sur l'image, mise en évidence des signaux texte saillants, et tableau de contribution par feature (SHAP).
 
 ### 1.3 Périmètre
 
 **Dans le périmètre :**
-- Classification binaire image-niveau : authentique vs générée par IA.
+- Classification binaire image : authentique vs générée par IA (axe principal).
+- Scoring de cohérence du texte de déclaration (axe complémentaire).
+- Fusion des deux signaux en un score de fraude unique.
 - Domaine : dégâts intérieurs habitation (dégât des eaux, incendie, bris de vitre, dégradation post-cambriolage).
-- Démonstrateur web fonctionnel (upload image + texte de déclaration).
+- Démonstrateur web Streamlit avec formulaire de déclaration complet (upload image + saisie texte structurée).
 
 **Hors périmètre :**
 - Détection de fraude « classique » (déclaration mensongère sur une photo authentique, manipulation type Photoshop subtile sans IA générative).
@@ -62,38 +80,70 @@ C'est cette articulation qui répond honnêtement au problème de la rareté des
 
 ## 3. Architecture technique
 
-### 3.1 Pipeline d'inférence
+### 3.1 Pipeline d'inférence — deux scores
+
+L'architecture est volontairement structurée pour produire **un score image autonome** (le résultat scientifique principal du projet) auquel un **score texte** vient se greffer pour enrichir la décision finale.
 
 ```
-        Photo soumise par l'assuré
-                  |
-                  v
-     [1] Pré-traitement image
-         (resize 224, EXIF, hash perceptuel)
-                  |
-                  v
-     [2] Encodeur visuel CLIP ViT-L/14
-         -> embedding 768-d
-                  |
-                  v
-     [3] Analyse sémantique LMM open-source
-         (BLIP-2 ou LLaVA-1.5-7B 4-bit)
-         -> caption + score VQA
-                  |
-                  v
-     [4] Concaténation features
-         (embedding CLIP + flags EXIF +
-          score LMM + hash distance)
-                  |
-                  v
-     [5] Classifieur supervisé
-         (LogReg / XGBoost)
-         -> probabilité fraude [0,1]
-                  |
-                  v
-     [6] Décision avec seuil ajustable
-         -> Légitime / À expertiser / Fraude probable
+   ┌───────────────────────────────────────────────────────────────────────┐
+   │  ENTRÉE : Photo (obligatoire) + Déclaration texte (optionnelle)        │
+   └───────────────────────────────────────────────────────────────────────┘
+                          │
+       ┌──────────────────┴──────────────────┐
+       │                                     │
+       ▼                                     ▼
+   ──────────────────────────       ──────────────────────────
+    BRANCHE IMAGE (principale)        BRANCHE TEXTE (complémentaire)
+   ──────────────────────────       ──────────────────────────
+       │                                     │
+   [I-1] Pré-traitement                  [T-1] Pré-traitement
+        (resize, EXIF, phash)                  (cleaning, NER spaCy)
+       │                                     │
+       ▼                                     ▼
+   [I-2] CLIP ViT-L/14                  [T-2] Features handcrafted
+        embedding 768-d                       (longueur, TTR, dates, montants,
+       │                                       mots emphatiques)
+       ▼                                     │
+   [I-3a] BLIP-2                              ▼
+        caption + 3 scores VQA           [T-3] Mistral-7B LLM-as-judge
+       │                                       5 scores : specificity, coherence,
+       ▼                                       plausibility, red_flags, overall
+   [I-3b] LLaVA-1.5 (4-bit)                  │
+        4 scores structurés                   │
+       │                                     │
+       ▼                                     │
+   [I-4] Classifieur image XGBoost #1        │
+        ────────────────────────              │
+         SCORE IMAGE [0, 1]                  │
+        ────────────────────────              │
+       │                                     │
+       └─────────────────┬───────────────────┘
+                         │
+                         ▼
+   [M-1] Classifieur multimodal XGBoost #2
+        (entrée = features image + features texte + score image)
+        ──────────────────────────────────
+          SCORE MULTIMODAL [0, 1]
+        ──────────────────────────────────
+                         │
+                         ▼
+   [D] Décision avec seuils ajustables
+       Si déclaration fournie : on utilise SCORE MULTIMODAL.
+       Sinon : on utilise SCORE IMAGE.
+       Légitime (< 0.3) / À expertiser (0.3 - 0.7) / Fraude probable (> 0.7)
+                         │
+                         ▼
+   [E] Explication
+       - GradCAM sur l'image (zones suspectes)
+       - SHAP sur le classifieur (contribution de chaque feature)
+       - Saillance texte (mots ayant pesé sur le verdict du LLM-judge)
 ```
+
+**Pourquoi deux classifieurs distincts ?**
+
+- Permet d'évaluer scientifiquement la performance image seule (cible principale du cours).
+- Permet de chiffrer le **gain** apporté par le texte (différence de ROC-AUC entre les deux modèles), un point fort à mettre en avant en soutenance.
+- Permet de servir une démo dégradée si l'assuré ne fournit pas de texte.
 
 ### 3.2 Stack technique
 
@@ -101,8 +151,10 @@ C'est cette articulation qui répond honnêtement au problème de la rareté des
 |---|---|---|
 | Langage | Python 3.10+ | Standard du domaine |
 | Vision encoder | CLIP ViT-L/14 (OpenAI, via `open_clip`) | Embeddings de référence, gratuit, rapide |
-| LMM | BLIP-2 OPT-2.7B (baseline) puis LLaVA-1.5-7B en 4-bit (cible) | Open-source, exécutables sur Colab T4 |
-| Génération synthétique | `diffusers` + SDXL Turbo | Gratuit, rapide en local |
+| LMM image | BLIP-2 OPT-2.7B + LLaVA-1.5-7B en 4-bit (les deux pour comparaison et redondance) | Open-source, exécutables sur Colab T4 |
+| LLM texte | Mistral-7B-Instruct-v0.3 en 4-bit | Génération de déclarations synthétiques + LLM-as-judge sur le texte de l'assuré |
+| Extraction entités texte | spaCy `fr_core_news_md` | NER (date, montant, lieu) pour features handcrafted |
+| Génération synthétique image | `diffusers` + SDXL Turbo | Gratuit, rapide en local |
 | Classifieur | scikit-learn (LogReg, RandomForest) + XGBoost | Léger, interprétable, reproductible |
 | Déséquilibre | `imbalanced-learn` (SMOTE, class_weight) | Standard pédagogique |
 | Explicabilité | SHAP (sur classifieur) + GradCAM (sur CLIP) via `pytorch-grad-cam` | Exigence rapport |
@@ -188,12 +240,22 @@ L'enseignant peut interroger chaque membre sur n'importe quelle partie : **chacu
 
 ### 6.1 Performance modèle
 
+**Modèle image (cible principale)** :
+
 | Métrique | Cible générique (CIFAKE+ArtiFact) | Cible domaine (habitation) | Justification |
 |---|---|---|---|
 | ROC-AUC | > 0.90 | > 0.75 | Synthèse standard, robuste au déséquilibre |
 | F1 (classe fraude) | > 0.85 | > 0.70 | Compromis precision/recall |
 | Recall (classe fraude) | > 0.85 | > 0.80 | Métrique métier prioritaire |
 | Latence inférence (1 image) | < 10 s sur HF Spaces (Streamlit) | — | Convient à un usage opérationnel |
+
+**Modèle multimodal (cible secondaire)** :
+
+| Métrique | Cible | Justification |
+|---|---|---|
+| Gain ROC-AUC vs image seule | > +3 points | Montre la valeur ajoutée du texte |
+| Recall classe fraude | > +2 points vs image seule | Le texte doit principalement améliorer la détection des fraudes que l'image rate |
+| Faux positifs (légitimes mal classés) | ≤ niveau image seule | La fusion ne doit pas dégrader |
 
 ### 6.2 Livrables (consignes ISFA)
 

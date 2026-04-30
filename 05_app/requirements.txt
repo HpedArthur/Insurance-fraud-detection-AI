@@ -1,0 +1,23 @@
+# Dependances minimales pour l'app deployee sur HuggingFace Spaces (CPU only).
+# Pour l'entrainement complet, voir requirements.txt a la racine du projet.
+
+streamlit>=1.32
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+xgboost>=2.0
+joblib>=1.3
+
+# Vision
+Pillow>=10.2
+torch>=2.2
+torchvision>=0.17
+open-clip-torch>=2.24
+
+# Texte
+spacy>=3.7
+
+# Optionnels (uniquement si load_lmm=True dans l'app)
+# transformers>=4.40
+# accelerate>=0.29
+# bitsandbytes>=0.43
