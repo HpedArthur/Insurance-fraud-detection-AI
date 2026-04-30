@@ -1,7 +1,6 @@
 # Plan projet — Détection de fraude à l'assurance habitation par LMM
 
 **Cours** : Intelligence Artificielle appliquée à l'Assurance — ML, Deep Learning & IA Générative (ISFA, 2025-2026)
-**Encadrant** : Aurélien Couloumy (acouloumy@dylogy.com)
 **Équipe** : 3 membres
 **Soutenance** : 15 minutes (10 min présentation + 5 min Q/R) — **cible interne : semaine du 25 mai 2026**
 **Statut sujet** : validé
