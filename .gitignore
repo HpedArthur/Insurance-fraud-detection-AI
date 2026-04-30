@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Modèles et données lourdes — ne JAMAIS pousser sur Git
+01_data/raw/
+01_data/processed/
+01_data/external/
+01_data/synthetic/
+04_models/*.pkl
+04_models/*.npy
+04_models/*.bin
+04_models/*.safetensors
+04_models/*.pt
+04_models/*.pth
+*.parquet
+
+# On garde les manifests vides
+!01_data/raw/.gitkeep
+!01_data/processed/.gitkeep
+!01_data/external/.gitkeep
+!01_data/synthetic/.gitkeep
+!04_models/.gitkeep
+
+# Secrets
+.env
+*.key
+.huggingface/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Outputs locaux
+06_reports/figures/*.png
+06_reports/figures/*.pdf
+!06_reports/figures/.gitkeep
+
+# HuggingFace cache
+~/.cache/huggingface/
