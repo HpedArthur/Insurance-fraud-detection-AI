@@ -24,24 +24,19 @@ ENV/
 *.ipynb_checkpoints
 
 # Modèles et données lourdes — ne JAMAIS pousser sur Git
-01_data/raw/
-01_data/processed/
-01_data/external/
-01_data/synthetic/
-04_models/*.pkl
-04_models/*.npy
-04_models/*.bin
-04_models/*.safetensors
-04_models/*.pt
-04_models/*.pth
-*.parquet
-
-# On garde les manifests vides
+# (on ignore le contenu mais on garde les .gitkeep pour conserver la structure)
+01_data/raw/*
+01_data/processed/*
+01_data/external/*
+01_data/synthetic/*
 !01_data/raw/.gitkeep
 !01_data/processed/.gitkeep
 !01_data/external/.gitkeep
 !01_data/synthetic/.gitkeep
+
+04_models/*
 !04_models/.gitkeep
+*.parquet
 
 # Secrets
 .env
@@ -66,3 +61,6 @@ desktop.ini
 
 # HuggingFace cache
 ~/.cache/huggingface/
+
+# Documents internes confidentiels
+note_evaluation_projet_ISFA.pdf
