@@ -288,6 +288,40 @@ class FraudDetector:
         coh["cf_circumstances_short"] = 1.0 if len(circ) < 80 else 0.0
         return coh
 
+    # ---------------- Score image seul (utilise par occlusion) ----------------
+    def score_image_only(self, image) -> float:
+        """Renvoie uniquement le score image (sans calculer le multimodal).
+        Utilise pour l'occlusion sensitivity ou les analyses de sensibilite."""
+        if self.image_model_pkg is None:
+            raise RuntimeError("Aucun modele image charge.")
+        clip_emb = self.encode_image_clip(image)
+        exif = extract_exif_features(image)
+        lmm_feats = self.lmm_features_image(image)
+        feat_names = self.image_model_pkg["feature_names"]
+        n_clip = sum(1 for n in feat_names if n.startswith("clip_"))
+        extras = [n for n in feat_names if not n.startswith("clip_")]
+        feature_values = {**exif, **lmm_feats}
+        extras_arr = np.array([float(feature_values.get(n, 0.5)) for n in extras], dtype=np.float32)
+        X_img = np.concatenate([clip_emb[:n_clip], extras_arr]).reshape(1, -1)
+        X_img_s = self.image_model_pkg["scaler"].transform(X_img)
+        return float(self.image_model_pkg["model"].predict_proba(X_img_s)[0, 1])
+
+    # ---------------- Explicabilite image ----------------
+    def explain_image(self, image, patch_size: int = 56, stride: int = 28) -> dict:
+        """Calcule une heatmap d'importance des zones de l'image.
+
+        Returns dict avec keys :
+          heatmap : ndarray (H, W) dans [0, 1], plus rouge = plus utilise par le modele
+          overlay : PIL.Image avec heatmap superposee
+          base_score : score image initial
+        """
+        from utils.explain import occlusion_heatmap, overlay_heatmap
+        base_score = self.score_image_only(image)
+        heatmap = occlusion_heatmap(image, self.score_image_only,
+                                    patch_size=patch_size, stride=stride)
+        overlay = overlay_heatmap(image, heatmap)
+        return {"heatmap": heatmap, "overlay": overlay, "base_score": base_score}
+
     # ---------------- Pipeline complet ----------------
     def predict(self, image, claim_form: dict | None = None) -> dict:
         """Predict. Retourne un dict structure pour l'app Streamlit."""
