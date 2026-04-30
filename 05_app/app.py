@@ -26,34 +26,99 @@ def load_detector(variant, load_lmm, load_judge):
                          load_lmm=load_lmm, load_judge=load_judge)
 
 
+# ============================================================
+# SIDEBAR avec explications visibles
+# ============================================================
+
 with st.sidebar:
-    st.markdown("### Reglages systeme")
-    variant = st.radio("Variante de modele", options=["lite", "full"], index=0,
-        help="Lite : CLIP + texte handcrafted. Full : ajoute BLIP-2/LLaVA/Mistral (GPU).")
+    st.markdown("## Reglages systeme")
+    st.caption("Pour la premiere utilisation, garde les valeurs par defaut.")
+
+    # --- Variante de modele ---
+    with st.expander("Variante de modele : qu'est-ce que c'est ?", expanded=False):
+        st.markdown(
+            "**Lite** (defaut) : utilise CLIP + EXIF + features texte simples.\n"
+            "Rapide (~5s par dossier), tourne sans GPU. C'est ce qui sera deploye.\n\n"
+            "**Full** : ajoute BLIP-2, LLaVA et Mistral pour une analyse plus fine.\n"
+            "Plus precis mais necessite une GPU avec ~12 Go de VRAM."
+        )
+    variant = st.radio("Variante", options=["lite", "full"], index=0, horizontal=True,
+                       label_visibility="collapsed")
+
+    st.markdown("---")
+
+    # --- Seuils de decision ---
+    st.markdown("### Seuils de decision")
+    with st.expander("Comment fonctionnent les seuils ?", expanded=False):
+        st.markdown(
+            "Le modele produit un **score entre 0 et 1** (probabilite de fraude).\n\n"
+            "Trois zones de decision :\n"
+            "- **Score < seuil bas** : Legitime (auto-validation)\n"
+            "- **Entre les deux seuils** : A expertiser (escalade humaine)\n"
+            "- **Score > seuil haut** : Fraude probable\n\n"
+            "**Important** : seuil bas doit etre **inferieur** au seuil haut.\n"
+            "Reglages typiques : bas=0.30, haut=0.70 (equilibre)."
+        )
+
     thresh_path = ROOT / "04_models" / f"thresholds_image_{variant}.json"
     if thresh_path.exists():
         with open(thresh_path) as f:
             cal = json.load(f)
         default_low = cal.get("low", 0.30)
         default_high = cal.get("high", 0.70)
-        st.success(f"Seuils calibres charges (low={default_low:.2f}, high={default_high:.2f})")
+        st.success(f"Seuils calibres automatiquement chargés\n"
+                   f"(bas={default_low:.2f}, haut={default_high:.2f})")
     else:
         default_low, default_high = 0.30, 0.70
+        st.info("Seuils par defaut. Lance `calibration.py` pour les optimiser sur votre dataset.")
 
-    threshold_low = st.slider("Seuil 'Legitime' (max)", 0.0, 1.0, default_low, 0.05)
-    threshold_high = st.slider("Seuil 'Fraude probable' (min)", 0.3, 1.0, default_high, 0.05)
+    threshold_low = st.slider("Seuil bas (max pour Legitime)", 0.0, 1.0, default_low, 0.05,
+                              help="En dessous de ce score, le dossier est considere legitime.")
+    threshold_high = st.slider("Seuil haut (min pour Fraude)", 0.0, 1.0, default_high, 0.05,
+                               help="Au dessus de ce score, le dossier est considere comme fraude probable.")
     if threshold_high < threshold_low:
+        st.warning(f"Le seuil haut doit etre superieur au seuil bas. Ajuste automatiquement a {threshold_low + 0.05:.2f}.")
         threshold_high = threshold_low + 0.05
 
-    show_explain = st.checkbox("Afficher l'explication visuelle (occlusion)", value=True,
-        help="Calcule une heatmap des zones de l'image que le modele utilise. Ajoute ~5-15s.")
+    st.markdown("---")
+
+    # --- Heatmap ---
+    with st.expander("Explication visuelle (heatmap) ?", expanded=False):
+        st.markdown(
+            "Calcule une **heatmap d'occlusion** sur l'image soumise.\n\n"
+            "Les zones **rouges** sont celles que le modele a regardees pour decider.\n"
+            "Tres utile pour justifier un verdict ou debugger.\n\n"
+            "Cout : ajoute ~5 a 15 secondes par dossier. A decocher si trop lent."
+        )
+    show_explain = st.checkbox("Afficher la heatmap d'explication", value=True)
 
     st.markdown("---")
-    st.markdown("### Modeles avances (full only)")
-    load_lmm = st.checkbox("Charger BLIP-2 + LLaVA", value=False, disabled=(variant == "lite"))
-    load_judge = st.checkbox("Charger Mistral (LLM judge)", value=False, disabled=(variant == "lite"))
-    st.caption("Necessite ~12 Go VRAM. Garder decoche sur HF Spaces gratuit.")
 
+    # --- Modeles avances ---
+    st.markdown("### Modeles avances")
+    with st.expander("Quand activer ?", expanded=False):
+        st.markdown(
+            "Disponible uniquement en variante **full**.\n\n"
+            "**BLIP-2 + LLaVA** : 2 LMM open-source qui analysent l'image et donnent\n"
+            "des scores supplementaires (artefacts, coherence de scene).\n\n"
+            "**Mistral judge** : LLM qui evalue le texte de declaration\n"
+            "(coherence narrative, signaux d'alerte).\n\n"
+            "Ces options consomment ~12 Go de VRAM cumules.\n"
+            "**A garder decoche sur HuggingFace Spaces gratuit (CPU only).**"
+        )
+    load_lmm = st.checkbox("BLIP-2 + LLaVA (image)", value=False, disabled=(variant == "lite"))
+    load_judge = st.checkbox("Mistral judge (texte)", value=False, disabled=(variant == "lite"))
+
+    if variant == "lite":
+        st.caption("Active la variante 'full' pour utiliser ces options.")
+
+    st.markdown("---")
+    st.caption("Astuce : les valeurs par defaut conviennent pour une premiere demo.")
+
+
+# ============================================================
+# CORPS PRINCIPAL
+# ============================================================
 
 st.title("Declaration de sinistre habitation")
 st.caption("Outil de detection de fraude par analyse d'image et de coherence textuelle. "
