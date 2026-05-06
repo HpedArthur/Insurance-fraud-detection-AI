@@ -4,7 +4,7 @@ Entrainement du classifieur MULTIMODAL.
 Prend en entree :
   - le score image (sortie du classifieur image charge depuis 04_models/image_model_<variant>.joblib)
   - les features texte extraites par extract_text.py
-  - quelques features de coherence inter-champs (calculees ici, voir build_cross_features)
+  - quelques features de coherence inter-champs (calculees ici, voir cross-field)
 
 Variantes :
   full  : score image full + texte handcrafted + texte LLM-judge
@@ -12,10 +12,24 @@ Variantes :
 
 L'idee est d'evaluer le GAIN apporte par le texte sur le scoring final.
 
-NOTE : ce script suppose qu'on dispose d'un dataset apparie (image + texte). Les images
-generiques (CIFAKE/ArtiFact) n'ont pas de declaration texte associee : on les ignore ici.
-On entraine donc uniquement sur les splits domain_*. Le dataset est petit, on fait un
-re-split val/test specifique avec stratification sur le label.
+LIMITES METHODOLOGIQUES (a documenter dans le rapport)
+======================================================
+1. Appariement (image, texte) : nous ne disposons pas de vraies declarations
+   liees aux photos Wikimedia/SDXL. Pour chaque image domain, on tire un texte
+   genere par Mistral parmi les declarations de meme (categorie, label).
+   Cela suppose qu'un fraudeur "coherent" aligne son texte avec sa photo.
+   Les performances rapportees constituent donc un MAJORANT des perfs reelles,
+   ou un texte authentique pourrait etre utilise avec une fausse photo (dossier
+   probablement plus difficile a detecter).
+
+2. Imputation : pour les champs texte absents, on utilise des valeurs par defaut
+   FIXES (0 pour les compteurs, 0.5 pour les scores) calculees independamment des
+   donnees. Cela evite toute fuite val/test -> imputation.
+
+3. Score_image en feature : le modele image qu'on injecte ici a ete entraine
+   uniquement sur generic_train (CIFAKE + ArtiFact). Il ne connait pas les images
+   domain. Le score_image sur les paires est donc une prediction generalisee, pas
+   memorisee.
 
 Usage :
     python 03_src/models/train_multimodal_model.py --variant both
@@ -93,7 +107,23 @@ def pair_image_with_text(image_df: pd.DataFrame, text_df: pd.DataFrame, seed: in
     return pd.DataFrame(paired_rows).reset_index(drop=True)
 
 
+# Valeurs d'imputation deterministes (independantes des donnees, donc pas de fuite)
+# - compteurs txt_n_* : 0 (rien n'a ete detecte)
+# - txt_ttr            : 0.5 (richesse vocabulaire moyenne)
+# - judge_*            : 0.5 (verdict neutre)
+TEXT_DEFAULTS = {
+    "txt_n_chars": 0.0, "txt_n_words": 0.0, "txt_n_sentences": 0.0,
+    "txt_ttr": 0.5,
+    "txt_n_dates": 0.0, "txt_n_money": 0.0, "txt_n_loc": 0.0, "txt_n_persons": 0.0,
+    "txt_n_emphatic": 0.0,
+    "judge_specificity": 0.5, "judge_coherence": 0.5,
+    "judge_plausibility": 0.5, "judge_red_flags": 0.5,
+    "judge_overall_genuine": 0.5,
+}
+
+
 def build_X_text(df: pd.DataFrame, variant: str) -> tuple[np.ndarray, list[str]]:
+    """Construit la matrice texte. Imputation par valeur fixe (pas de fuite)."""
     cols = HANDCRAFTED_TEXT_COLS.copy()
     if variant == "full":
         cols.extend([c for c in JUDGE_COLS if c in df.columns])
@@ -102,7 +132,8 @@ def build_X_text(df: pd.DataFrame, variant: str) -> tuple[np.ndarray, list[str]]
     names = []
     for c in cols:
         if c in df.columns:
-            arrays.append(df[c].astype(float).fillna(df[c].astype(float).mean()).values.reshape(-1, 1))
+            default = TEXT_DEFAULTS.get(c, 0.0)
+            arrays.append(df[c].astype(float).fillna(default).values.reshape(-1, 1))
             names.append(c)
     if not arrays:
         return np.zeros((len(df), 0), dtype=np.float32), []

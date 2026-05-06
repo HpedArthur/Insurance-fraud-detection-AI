@@ -60,14 +60,28 @@ with st.sidebar:
             "Reglages typiques : bas=0.30, haut=0.70 (equilibre)."
         )
 
-    thresh_path = ROOT / "04_models" / f"thresholds_image_{variant}.json"
-    if thresh_path.exists():
-        with open(thresh_path) as f:
-            cal = json.load(f)
-        default_low = cal.get("low", 0.30)
-        default_high = cal.get("high", 0.70)
-        st.success(f"Seuils calibres automatiquement chargés\n"
-                   f"(bas={default_low:.2f}, haut={default_high:.2f})")
+    # On prefere les seuils multimodaux si dispos, sinon image
+    thresh_candidates = [
+        ROOT / "04_models" / f"thresholds_multimodal_{variant}.json",
+        ROOT / "04_models" / f"thresholds_image_{variant}.json",
+    ]
+    thresh_path = next((p for p in thresh_candidates if p.exists()), None)
+    if thresh_path is not None:
+        try:
+            with open(thresh_path, "r", encoding="utf-8") as f:
+                cal = json.load(f)
+            default_low = float(cal.get("low", 0.30))
+            default_high = float(cal.get("high", 0.70))
+            # Garde-fou si calibration foireuse (low >= high)
+            if default_low >= default_high:
+                default_low, default_high = 0.30, 0.70
+                st.warning("Calibration sauvegardee invalide (low >= high), retour aux defauts.")
+            else:
+                st.success(f"Seuils calibres charges depuis {thresh_path.name}\n"
+                           f"(bas={default_low:.2f}, haut={default_high:.2f})")
+        except Exception as e:
+            default_low, default_high = 0.30, 0.70
+            st.warning(f"Impossible de lire les seuils calibres : {e}. Retour aux defauts.")
     else:
         default_low, default_high = 0.30, 0.70
         st.info("Seuils par defaut. Lance `calibration.py` pour les optimiser sur votre dataset.")
@@ -235,6 +249,13 @@ if not st.session_state["submitted"]:
         with st.spinner("Analyse en cours - extraction features image et texte, scoring..."):
             try:
                 detector = load_detector(variant, load_lmm, load_judge)
+                if not detector.is_ready():
+                    st.error(
+                        "Modele image non disponible. Verifie que `04_models/image_model_"
+                        f"{variant}.joblib` existe. Sinon lance :\n"
+                        f"`python 03_src/models/train_image_model.py --variant {variant}`"
+                    )
+                    st.stop()
                 image_bytes = uploaded.read()
                 image = Image.open(BytesIO(image_bytes)).convert("RGB")
                 result = detector.predict(image, claim_form=form_data)
@@ -243,9 +264,16 @@ if not st.session_state["submitted"]:
                 st.session_state["image_bytes"] = image_bytes
                 st.session_state["submitted"] = True
                 st.rerun()
+            except FileNotFoundError as e:
+                st.error(f"Fichier manquant : {e}")
+            except RuntimeError as e:
+                st.error(f"Erreur modele : {e}")
             except Exception as e:
+                # Pour le debug local : on affiche le detail
+                # En prod (HF Spaces), preferer un message generique sans stack trace
                 st.error(f"Erreur lors de l'analyse : {e}")
-                st.exception(e)
+                if st.session_state.get("debug_mode", False):
+                    st.exception(e)
 
 else:
     result = st.session_state["result"]
