@@ -2,21 +2,24 @@
 Extraction de features image avec BLIP-2.
 
 Pour chaque image on calcule :
-  - blip2_caption    : caption libre genere par BLIP-2
-  - blip2_score_real : reponse VQA "Is this a real photograph?" -> proba "yes"
-  - blip2_score_ai   : reponse VQA "Is this AI generated?" -> proba "yes"
-  - blip2_score_artifact : reponse VQA "Are there any visual artifacts in this image?" -> proba "yes"
+  - blip2_caption        : caption libre genere par BLIP-2
+  - blip2_score_real     : VQA "Is this a real photograph?" -> proba "yes"
+  - blip2_score_ai       : VQA "Is this AI generated?" -> proba "yes"
+  - blip2_score_artifact : VQA "Are there visual artifacts?" -> proba "yes"
 
-BLIP-2 OPT-2.7B : ~5.4 Go en fp16, tient sur Colab T4.
+Avec sauvegarde incrementale + resume automatique : si Colab deconnecte,
+les images deja traitees ne seront pas refaites au prochain lancement.
 
 Usage :
-    python 03_src/features/extract_blip2.py --batch 4
+    python 03_src/features/extract_blip2.py --limit-to-domain --save-every 30
+    # Si interrompu, relancer la meme commande pour reprendre.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +40,7 @@ VQA_QUESTIONS = {
 }
 
 CAPTION_PROMPT = "a photo of"
+NEW_COLS = ["blip2_caption"] + list(VQA_QUESTIONS.keys())
 
 
 def load_blip2(device: str = None):
@@ -58,22 +62,17 @@ def caption_one(model, processor, image: Image.Image, device: str) -> str:
     if device == "cuda":
         inputs = {k: v.to(torch.float16) if v.dtype == torch.float32 else v for k, v in inputs.items()}
     out = model.generate(**inputs, max_new_tokens=30)
-    text = processor.tokenizer.decode(out[0], skip_special_tokens=True).strip()
-    return text
+    return processor.tokenizer.decode(out[0], skip_special_tokens=True).strip()
 
 
 @torch.no_grad()
 def vqa_yes_proba(model, processor, image: Image.Image, question: str, device: str) -> float:
-    """Renvoie la probabilite que la reponse soit 'yes' a une question oui/non."""
     inputs = processor(images=image, text=question, return_tensors="pt").to(device)
     if device == "cuda":
         inputs = {k: v.to(torch.float16) if v.dtype == torch.float32 else v for k, v in inputs.items()}
-    out = model.generate(
-        **inputs, max_new_tokens=4, output_scores=True, return_dict_in_generate=True
-    )
+    out = model.generate(**inputs, max_new_tokens=4, output_scores=True, return_dict_in_generate=True)
     text = processor.tokenizer.decode(out.sequences[0], skip_special_tokens=True).lower()
     answer = text.split("answer:")[-1].strip()
-    # Heuristique : 1 si "yes", 0 si "no", 0.5 sinon
     if answer.startswith("yes"):
         return 1.0
     if answer.startswith("no"):
@@ -81,51 +80,91 @@ def vqa_yes_proba(model, processor, image: Image.Image, question: str, device: s
     return 0.5
 
 
-def extract_for_dataset(df: pd.DataFrame, root: Path, batch_size: int = 1) -> pd.DataFrame:
-    model, processor, device = load_blip2()
+def atomic_save(df: pd.DataFrame, out_path: Path):
+    tmp = out_path.with_suffix(".parquet.tmp")
+    df.to_parquet(tmp, index=False)
+    os.replace(tmp, out_path)
 
-    results = {k: [] for k in ["blip2_caption"] + list(VQA_QUESTIONS.keys())}
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="BLIP-2"):
-        path = root / row["image_path"]
+def init_or_resume(df: pd.DataFrame, out_path: Path) -> pd.DataFrame:
+    """Charge un fichier partiel valide ou cree une nouvelle structure."""
+    if out_path.exists():
         try:
-            img = Image.open(path).convert("RGB")
-            cap = caption_one(model, processor, img, device)
-            results["blip2_caption"].append(cap)
-            for key, q in VQA_QUESTIONS.items():
-                results[key].append(vqa_yes_proba(model, processor, img, q, device))
+            partial = pd.read_parquet(out_path)
+            if len(partial) == len(df) and set(partial["image_path"]) == set(df["image_path"]):
+                # Reordonner partial selon l'ordre de df pour coherence
+                partial = partial.set_index("image_path").loc[df["image_path"]].reset_index()
+                logger.info("Partiel valide trouve : resume actif")
+                return partial
+            logger.warning("Partiel incompatible (taille ou ids), on recommence")
         except Exception as e:
-            logger.warning("Echec %s : %s", path, e)
-            results["blip2_caption"].append(None)
-            for key in VQA_QUESTIONS:
-                results[key].append(None)
-
-    out = df.copy()
-    for k, v in results.items():
-        out[k] = v
+            logger.warning("Lecture partielle echouee : %s", e)
+    out = df.copy().reset_index(drop=True)
+    for c in NEW_COLS:
+        out[c] = None
     return out
 
 
+def extract_with_resume(df: pd.DataFrame, root: Path, out_path: Path, save_every: int = 30) -> pd.DataFrame:
+    df_work = init_or_resume(df, out_path).reset_index(drop=True)
+    n = len(df_work)
+    done_mask = df_work["blip2_caption"].notna()
+    done_count = int(done_mask.sum())
+    logger.info("Deja fait : %d / %d", done_count, n)
+
+    model, processor, device = load_blip2()
+
+    saved_since = 0
+    pbar = tqdm(total=n, initial=done_count, desc="BLIP-2")
+    for idx in range(n):
+        if pd.notna(df_work.at[idx, "blip2_caption"]):
+            continue
+        path = root / df_work.at[idx, "image_path"]
+        try:
+            img = Image.open(path).convert("RGB")
+            df_work.at[idx, "blip2_caption"] = caption_one(model, processor, img, device)
+            for key, q in VQA_QUESTIONS.items():
+                df_work.at[idx, key] = vqa_yes_proba(model, processor, img, q, device)
+        except Exception as e:
+            logger.warning("Echec %s : %s", path, e)
+            df_work.at[idx, "blip2_caption"] = ""
+            for key in VQA_QUESTIONS:
+                df_work.at[idx, key] = 0.5
+
+        pbar.update(1)
+        saved_since += 1
+        if saved_since >= save_every:
+            atomic_save(df_work, out_path)
+            saved_since = 0
+    pbar.close()
+    atomic_save(df_work, out_path)
+    return df_work
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Features BLIP-2")
+    parser = argparse.ArgumentParser(description="Features BLIP-2 (avec resume)")
     parser.add_argument("--dataset", type=Path,
                         default=Path("01_data/processed/dataset_with_clip.parquet"))
     parser.add_argument("--out", type=Path,
                         default=Path("01_data/processed/dataset_with_blip2.parquet"))
     parser.add_argument("--root", type=Path, default=Path("."))
+    parser.add_argument("--save-every", type=int, default=30,
+                        help="Sauvegarde tous les N images traitees (defaut 30)")
     parser.add_argument("--limit-to-domain", action="store_true",
-                        help="Ne calcule que sur les splits domain_* (plus rapide pour les tests)")
+                        help="Ne calcule que sur les splits domain_* (recommande sur Colab Free)")
+    parser.add_argument("--batch", type=int, default=1, help="(legacy, ignore)")
     args = parser.parse_args()
 
     df = pd.read_parquet(args.dataset)
     if args.limit_to_domain:
         df = df[df["split"].astype(str).str.startswith("domain_")].reset_index(drop=True)
         logger.info("Limite au domaine habitation : %d lignes", len(df))
+    else:
+        logger.info("Dataset complet : %d lignes", len(df))
 
-    out = extract_for_dataset(df, root=args.root)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(args.out, index=False)
-    logger.info("Sauvegarde : %s", args.out)
+    extract_with_resume(df, args.root, args.out, save_every=args.save_every)
+    logger.info("Sauvegarde finale : %s", args.out)
 
 
 if __name__ == "__main__":

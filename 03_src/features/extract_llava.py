@@ -2,15 +2,16 @@
 Extraction de features image avec LLaVA-1.5-7B (4-bit).
 
 Pour chaque image on demande a LLaVA un JSON structure :
-  - llava_score_real        : score entre 0 et 1, plus eleve = plus reelle
-  - llava_score_artifact    : presence d'artefacts visuels typiques d'IA
-  - llava_score_coherence   : coherence interne de la scene (textures, ombres, perspectives)
-  - llava_observation       : description courte des elements suspects ou rassurants
+  - llava_score_real      : proba que l'image soit une vraie photo
+  - llava_score_artifact  : presence d'artefacts visuels typiques d'IA
+  - llava_score_coherence : coherence interne (textures, ombres, perspectives)
+  - llava_observation     : description courte des elements suspects/rassurants
 
-LLaVA-1.5-7B en 4-bit : ~5 Go VRAM, OK Colab T4.
+Avec sauvegarde incrementale + resume automatique.
 
 Usage :
-    python 03_src/features/extract_llava.py
+    python 03_src/features/extract_llava.py --limit-to-domain --save-every 20
+    # Si interrompu, relancer la meme commande pour reprendre.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -55,14 +57,14 @@ Reply ONLY with a JSON object (no commentary), with this exact schema:
 }
 ASSISTANT:"""
 
+NEW_COLS = ["llava_score_real", "llava_score_artifact", "llava_score_coherence", "llava_observation"]
+
 
 def load_llava(device: str = None):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-
     logger.info("Chargement LLaVA-1.5-7B (device=%s)...", device)
     processor = AutoProcessor.from_pretrained(MODEL_ID)
-
     if device == "cuda":
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -70,15 +72,12 @@ def load_llava(device: str = None):
             bnb_4bit_quant_type="nf4",
         )
         model = LlavaForConditionalGeneration.from_pretrained(
-            MODEL_ID,
-            quantization_config=bnb_config,
-            device_map="auto",
+            MODEL_ID, quantization_config=bnb_config, device_map="auto"
         )
     else:
         model = LlavaForConditionalGeneration.from_pretrained(
             MODEL_ID, torch_dtype=torch.float32
         ).to(device)
-
     model.eval()
     return model, processor, device
 
@@ -97,16 +96,9 @@ def analyse_one(model, processor, image: Image.Image) -> dict:
 
 
 def parse_json_answer(text: str) -> dict:
-    """Parse la reponse JSON de LLaVA, robuste aux ecarts mineurs."""
-    default = {
-        "llava_score_real": None,
-        "llava_score_artifact": None,
-        "llava_score_coherence": None,
-        "llava_observation": None,
-    }
+    default = {c: None for c in NEW_COLS}
     if not text:
         return default
-    # On tente d'isoler le JSON
     match = re.search(r"\{[\s\S]*?\}", text)
     if not match:
         return default
@@ -138,47 +130,93 @@ def _to_str(v):
     return s[:300] if s else None
 
 
-def extract_for_dataset(df: pd.DataFrame, root: Path) -> pd.DataFrame:
+def atomic_save(df: pd.DataFrame, out_path: Path):
+    tmp = out_path.with_suffix(".parquet.tmp")
+    df.to_parquet(tmp, index=False)
+    os.replace(tmp, out_path)
+
+
+def init_or_resume(df: pd.DataFrame, out_path: Path) -> pd.DataFrame:
+    if out_path.exists():
+        try:
+            partial = pd.read_parquet(out_path)
+            if len(partial) == len(df) and set(partial["image_path"]) == set(df["image_path"]):
+                partial = partial.set_index("image_path").loc[df["image_path"]].reset_index()
+                logger.info("Partiel valide trouve : resume actif")
+                return partial
+            logger.warning("Partiel incompatible, on recommence")
+        except Exception as e:
+            logger.warning("Lecture partielle echouee : %s", e)
+    out = df.copy().reset_index(drop=True)
+    for c in NEW_COLS:
+        out[c] = None
+    return out
+
+
+def extract_with_resume(df: pd.DataFrame, root: Path, out_path: Path, save_every: int = 20) -> pd.DataFrame:
+    df_work = init_or_resume(df, out_path).reset_index(drop=True)
+    n = len(df_work)
+    done_count = int(df_work["llava_score_real"].notna().sum())
+    logger.info("Deja fait : %d / %d", done_count, n)
+
     model, processor, _ = load_llava()
-    rows = []
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="LLaVA"):
-        path = root / row["image_path"]
+
+    saved_since = 0
+    pbar = tqdm(total=n, initial=done_count, desc="LLaVA")
+    for idx in range(n):
+        if pd.notna(df_work.at[idx, "llava_score_real"]):
+            continue
+        path = root / df_work.at[idx, "image_path"]
         try:
             img = Image.open(path).convert("RGB")
             res = analyse_one(model, processor, img)
         except Exception as e:
             logger.warning("Echec %s : %s", path, e)
-            res = {
-                "llava_score_real": None,
-                "llava_score_artifact": None,
-                "llava_score_coherence": None,
-                "llava_observation": None,
-            }
-        rows.append(res)
+            res = {c: None for c in NEW_COLS}
 
-    extra = pd.DataFrame(rows)
-    return pd.concat([df.reset_index(drop=True), extra], axis=1)
+        # Si tout est None on met une sentinelle pour ne pas reboucler dessus eternellement
+        if all(v is None for v in res.values()):
+            res["llava_score_real"] = 0.5
+            res["llava_score_artifact"] = 0.5
+            res["llava_score_coherence"] = 0.5
+            res["llava_observation"] = ""
+
+        for c in NEW_COLS:
+            df_work.at[idx, c] = res.get(c)
+
+        pbar.update(1)
+        saved_since += 1
+        if saved_since >= save_every:
+            atomic_save(df_work, out_path)
+            saved_since = 0
+    pbar.close()
+    atomic_save(df_work, out_path)
+    return df_work
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Features LLaVA")
+    parser = argparse.ArgumentParser(description="Features LLaVA (avec resume)")
     parser.add_argument("--dataset", type=Path,
                         default=Path("01_data/processed/dataset_with_blip2.parquet"))
     parser.add_argument("--out", type=Path,
                         default=Path("01_data/processed/dataset_with_lmm.parquet"))
     parser.add_argument("--root", type=Path, default=Path("."))
-    parser.add_argument("--limit-to-domain", action="store_true")
+    parser.add_argument("--save-every", type=int, default=20,
+                        help="Sauvegarde tous les N images traitees (defaut 20)")
+    parser.add_argument("--limit-to-domain", action="store_true",
+                        help="Ne calcule que sur les splits domain_* (recommande sur Colab Free)")
     args = parser.parse_args()
 
     df = pd.read_parquet(args.dataset)
     if args.limit_to_domain:
         df = df[df["split"].astype(str).str.startswith("domain_")].reset_index(drop=True)
         logger.info("Limite au domaine habitation : %d lignes", len(df))
+    else:
+        logger.info("Dataset complet : %d lignes", len(df))
 
-    out = extract_for_dataset(df, root=args.root)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(args.out, index=False)
-    logger.info("Sauvegarde : %s", args.out)
+    extract_with_resume(df, args.root, args.out, save_every=args.save_every)
+    logger.info("Sauvegarde finale : %s", args.out)
 
 
 if __name__ == "__main__":
