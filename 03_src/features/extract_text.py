@@ -159,7 +159,11 @@ def load_judge(device: str = None):
 
 @torch.no_grad()
 def judge_text(model, tokenizer, text: str) -> dict:
-    prompt = JUDGE_PROMPT.format(text=text.replace('"""', "'''"))
+    # NOTE : on N'UTILISE PAS .format() car le JUDGE_PROMPT contient un schema JSON
+    # avec des accolades (ex: {"specificity": float, ...}) que .format interpreterait
+    # comme des placeholders et leverait KeyError('"specificity"').
+    safe_text = text.replace('"""', "'''")
+    prompt = JUDGE_PROMPT.replace("{text}", safe_text)
     msgs = [{"role": "user", "content": prompt}]
     chat = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(chat, return_tensors="pt").to(model.device)
