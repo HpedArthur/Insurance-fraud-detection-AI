@@ -52,8 +52,8 @@ Le système livré ne remplace pas l'expert humain ; il agit comme un filtre de 
 
 Aucun jeu de données public ne combine "photos de sinistres habitation authentiques validées par expert" et "photos synthétiques équivalentes". Les bases internes des assureurs (ISO ClaimSearch, Shift Technology) sont fermées. L'autonomie sur la donnée fait partie intégrante du projet et nous adoptons une **stratégie en deux étages** assumant explicitement cette contrainte :
 
-- **Étage 1 — Données génériques (~ [VOLUME-A-COMPLETER] images)** : couvrent l'apprentissage des signatures de générateurs sur un large spectre de scènes (visages, objets, paysages). Ces images ne sont pas spécifiques à l'assurance, mais elles permettent au modèle d'apprendre la frontière "photo réelle vs sortie d'IA" avec un volume suffisant.
-- **Étage 2 — Données domaine habitation (~ [VOLUME-A-COMPLETER] images)** : sert à valider la capacité du modèle à transférer ses apprentissages au domaine cible. Le test final est conduit sur ce sous-ensemble, jamais utilisé en entraînement.
+- **Étage 1 — Données génériques (~ 29 900 images)** : couvrent l'apprentissage des signatures de générateurs sur un large spectre de scènes (visages, objets, paysages). Ces images ne sont pas spécifiques à l'assurance, mais elles permettent au modèle d'apprendre la frontière "photo réelle vs sortie d'IA" avec un volume suffisant.
+- **Étage 2 — Données domaine habitation (~ 1 170 images)** : sert à valider la capacité du modèle à transférer ses apprentissages au domaine cible. Le test final est conduit sur ce sous-ensemble, jamais utilisé en entraînement.
 
 ## 2.3 Sources retenues
 
@@ -61,11 +61,10 @@ Aucun jeu de données public ne combine "photos de sinistres habitation authenti
 |---|---|---|---|---|
 | CIFAKE (HuggingFace) | Réelles + synthétiques génériques | 60 000 paires | MIT | Étage 1 (entraînement) |
 | ArtiFact subset (HuggingFace) | Réelles + 25 générateurs IA | ~20 000 | CC-BY | Étage 1 (entraînement, diversité de générateurs) |
-| Wikimedia Commons | Photographies authentiques de dégâts | ~ [VOLUME] | CC0 / CC-BY | Étage 2 (validation domaine) |
-| Pexels (API) | Photographies authentiques de dégâts | ~ [VOLUME] | Pexels License | Étage 2 (validation domaine) |
-| Photos personnelles équipe | Photographies smartphone authentiques | ~ [VOLUME] | Propriétaire équipe | Étage 2 (test ultime, non utilisé en entraînement) |
-| SDXL Turbo (générées par nous) | Synthétiques habitation | ~1 500 | Production interne | Étage 2 (validation domaine) |
-| Flux Schnell / SD 1.5 | Synthétiques cross-générateur | ~200 | Production interne | Test de généralisation |
+| Wikimedia Commons | Photographies authentiques de dégâts | ~ 800 | CC0 / CC-BY | Étage 2 (validation domaine) |
+| Pexels (API) | Photographies authentiques de dégâts | non utilisé | Pexels License | Source identifiée mais non exploitée (rate limit) |
+| Photos personnelles équipe | Photographies smartphone authentiques | à compléter | Propriétaire équipe | Étage 2 (test ultime, non utilisé en entraînement) |
+| SDXL Turbo (générées par nous) | Synthétiques habitation | ~1 500 | Production interne | Étage 2 (validation domaine + test cross-générateur) |
 
 ## 2.4 Préparation et contrôle qualité
 
@@ -76,13 +75,13 @@ Le pipeline d'acquisition est entièrement scripté et reproductible. Chaque ima
 - **Calcul d'un perceptual hash (pHash 16 bits)** pour détecter et supprimer les doublons exacts ou quasi-exacts entre sources.
 - **Vérification visuelle par échantillonnage** sur 100 images par catégorie pour exclure les hors-sujet (architecture, paysages sans dégâts).
 
-Après dédoublonnage et nettoyage, le dataset consolidé compte **[VOLUME-FINAL] images** réparties en cinq splits stratifiés par classe et par source. Le détail figure section 4.
+Après dédoublonnage et nettoyage, le dataset consolidé compte **31 062 images** réparties en cinq splits stratifiés par classe et par source : `generic_train` (≈ 24 000), `generic_val` (≈ 2 990), `generic_test` (≈ 2 990), `domain_train` (≈ 760), `domain_val` (≈ 175), `domain_test` (≈ 820). Le détail figure section 4.
 
 ## 2.5 Génération synthétique
 
 Le volet "image synthétique" est traité par génération contrôlée. Nous utilisons Stable Diffusion XL Turbo (`stabilityai/sdxl-turbo`), libre, exécutable sur GPU T4 gratuit (Google Colab), pour produire 1 500 images réparties à parts égales entre les quatre catégories du domaine. Chaque catégorie repose sur 5 prompts différents avec variation des seeds et samplers, afin d'éviter une signature trop uniforme et un sur-apprentissage sur un unique pattern de génération.
 
-200 images supplémentaires sont produites avec un second générateur (Flux Schnell ou Stable Diffusion 1.5) pour permettre une évaluation cross-générateur (section 4.3) et quantifier la capacité de généralisation du modèle final.
+L'évaluation cross-générateur (section 4.3) ne s'appuie pas sur des générations additionnelles produites par nos soins, mais sur les **groupes de générateurs déjà présents dans les datasets externes** : Stable Diffusion 1.4 dans CIFAKE, mélange multi-générateurs ("various") dans ArtiFact, comparés à notre génération SDXL Turbo. Cette stratégie est plus économique en ressources GPU et reste pertinente puisqu'elle compare un générateur ancien (SD 1.4) à un générateur moderne (SDXL Turbo). L'extension à Flux Schnell ou Sora est listée en perspective (section 6.4).
 
 ## 2.6 Génération synthétique du texte de déclaration
 
@@ -176,10 +175,12 @@ Ces sept scores deviennent des features additionnelles concaténées à l'embedd
 
 Nous comparons trois algorithmes : régression logistique (avec L2), Random Forest (400 arbres) et XGBoost (500 arbres, profondeur 6). La sélection se fait sur la ROC-AUC du validation set (`generic_val`). Le déséquilibre éventuel des classes est traité par **SMOTE** sur le train set uniquement.
 
+Empiriquement, c'est la **régression logistique** qui obtient la meilleure ROC-AUC sur le validation set (cf. section 4.2). Ce résultat est cohérent avec la nature des features : un embedding CLIP de 768 dimensions est conçu pour être linéairement séparable (apprentissage contrastif), un classifieur linéaire suffit donc à exploiter l'information. Les modèles à arbres souffrent ici de la haute dimensionnalité et de l'absence d'une feature scalaire dominante.
+
 Deux variantes sont entraînées en parallèle :
 
-- **Variante `lite`** — features = embedding CLIP + flags EXIF. Léger (~10 Mo), adapté à l'inférence sur HF Spaces gratuit (CPU only).
-- **Variante `full`** — features = lite + scores BLIP-2 + scores LLaVA. Performance optimale, nécessite une GPU pour l'inférence.
+- **Variante `lite`** — features = embedding CLIP + flags EXIF (770 features au total). Léger (~10 Mo), adapté à l'inférence sur HF Spaces gratuit (CPU only).
+- **Variante `full`** — features = lite + scores BLIP-2 (3) + scores LLaVA (3) (776 features au total). Les scores BLIP-2 et LLaVA ne sont calculés que sur le sous-ensemble domain (1 170 images), ils sont imputés par défaut neutre (0,5) sur les images génériques pour permettre l'entraînement sur le dataset complet. Cette imputation explique que le gain de la variante full sur la variante lite reste modeste sur generic_val.
 
 ## 3.5 Composant texte : NER + LLM-as-judge
 
@@ -218,11 +219,12 @@ Ces features capturent des signaux que ni l'image ni le texte libre ne portent i
 Le classifieur multimodal prend en entrée :
 
 - Le **score image** issu du classifieur précédent (1 feature),
-- Les **9 features handcrafted texte**,
-- Les **5 scores Mistral-judge**,
-- Les **6 features de cohérence inter-champs**.
+- Les **9 features handcrafted texte** (longueurs, TTR, comptage entités, mots emphatiques),
+- Les **5 scores Mistral-judge** (variante `full` uniquement).
 
-Soit 21 features, traitées par un XGBoost (300 arbres, profondeur 4) entraîné sur le sous-ensemble domaine habitation (images appariées à des textes synthétiques par cohérence catégorie/label).
+Soit **10 features pour le multimodal `lite`** et **15 features pour le multimodal `full`**. Les 6 features de cohérence inter-champs (`cf_*` décrites section 3.6) sont calculées au moment de l'inférence sur le formulaire Streamlit mais ne sont pas utilisées en entraînement (les paires synthétiques image+texte ne contiennent pas de formulaire structuré).
+
+Le classifieur est un XGBoost (300 arbres, profondeur 4, learning rate 0,05) entraîné sur le sous-ensemble domaine habitation (1 170 paires images appariées à des textes synthétiques par cohérence catégorie/label, voir limite méthodologique section 6.1).
 
 ## 3.8 Décision et calibration des seuils
 
@@ -238,9 +240,9 @@ Les seuils sont **calibrés automatiquement** sur le validation set selon la str
 
 Trois mécanismes complémentaires :
 
-- **Occlusion sensitivity** sur l'image : un patch glissant masque l'image et observe la chute du score. Produit une heatmap des zones critiques. Avantage : model-agnostic, fonctionne avec notre pipeline sklearn sans gradient.
-- **SHAP TreeExplainer** sur le classifieur XGBoost : importance globale et explication individuelle d'une prédiction (waterfall plot).
-- **Décomposition par axe** dans l'interface : score image, score multimodal, et table des features texte saillantes.
+- **Occlusion sensitivity** sur l'image : un patch glissant (taille 48 px, stride 24) masque l'image et observe la chute du score. Produit une heatmap des zones critiques. Avantage : model-agnostic, fonctionne avec notre pipeline sklearn sans accès au gradient.
+- **SHAP** sur le classifieur image : `LinearExplainer` pour la régression logistique retenue (sinon `TreeExplainer` si XGBoost). Fournit l'importance globale (summary plot et bar plot) et l'explication individuelle d'une prédiction (waterfall plot).
+- **Décomposition par axe** dans l'interface Streamlit : affichage simultané du score image, du score multimodal et de la table des features texte saillantes pour permettre à l'expert d'identifier rapidement la source du verdict.
 
 # 4. Résultats et analyses de sensibilité
 
@@ -248,46 +250,53 @@ Trois mécanismes complémentaires :
 
 Les chiffres présentés dans cette section sont obtenus après exécution complète du pipeline sur la machine de référence (Colab T4, 16 Go VRAM).
 
-**Modèle image (axe principal) — variante `full` :**
+**Modèle image (axe principal) — variante `full` (algorithme retenu : régression logistique) :**
 
-| Split | n | ROC-AUC | F1 (classe synthétique) | Recall (synthétique) | Precision (synthétique) |
+| Split | n | ROC-AUC | F1 (synthétique) | Recall (synthétique) | Precision (synthétique) |
 |---|---|---|---|---|---|
-| generic_val | [N] | [VAL-AUC] | [VAL-F1] | [VAL-RECALL] | [VAL-PREC] |
-| generic_test | [N] | [TEST-AUC] | [TEST-F1] | [TEST-RECALL] | [TEST-PREC] |
-| domain_test (habitation) | [N] | [DOM-AUC] | [DOM-F1] | [DOM-RECALL] | [DOM-PREC] |
+| generic_val | 2 989 | 0,763 | 0,724 | 0,75 | 0,70 |
+| generic_test | 2 990 | 0,737 | 0,686 | 0,68 | 0,69 |
+| domain_test | 819 | 0,414 | 0,273 | 0,19 | 0,49 |
 
-**Modèle multimodal (image + texte) — variante `full` :**
+L'effondrement de la performance sur `domain_test` (AUC 0,414) traduit le décalage entre les générateurs vus en entraînement (Stable Diffusion 1.4 dans CIFAKE) et le générateur cible du domaine (SDXL Turbo). Cette chute motive l'introduction de la modalité texte.
 
-| Split | n | ROC-AUC | F1 |
-|---|---|---|---|
-| domain_test | [N] | [MM-AUC] | [MM-F1] |
+**Modèle multimodal (image + texte) — variante `full` (XGBoost sur paires image+texte) :**
 
-**Gain apporté par la modalité texte :** ΔROC-AUC = [GAIN-AUC] points, ΔRecall = [GAIN-RECALL] points.
+| Split | n | ROC-AUC | F1 (synthétique) | Recall | Precision |
+|---|---|---|---|---|---|
+| domain_val | 176 | 0,964 | 0,937 | 0,93 | 0,95 |
+| domain_test | 585 | 0,932 | 0,905 | 0,92 | 0,89 |
+
+**Gain apporté par la modalité texte sur `domain_test` :** ΔROC-AUC = +0,541 points (passage de 0,391 à 0,932), ΔF1 = +0,654 points (passage de 0,251 à 0,905). Cette amplitude valide l'hypothèse de complémentarité des modalités : le texte rattrape la majorité des fraudes que l'image seule ne détecte plus sur SDXL Turbo.
 
 ## 4.2 Comparaison des classifieurs
 
-Tableau de comparaison des trois algorithmes sur `generic_val` :
+Tableau de comparaison des trois algorithmes sur `generic_val` (variante `full`, 770 features) :
 
-| Algorithme | ROC-AUC | F1 | Latence (1 image, CPU) |
+| Algorithme | ROC-AUC | F1 | Accuracy |
 |---|---|---|---|
-| Logistic Regression | [VAL-LR] | [F1-LR] | [LAT-LR] |
-| Random Forest | [VAL-RF] | [F1-RF] | [LAT-RF] |
-| XGBoost | [VAL-XGB] | [F1-XGB] | [LAT-XGB] |
+| Logistic Regression | 0,763 | 0,724 | 0,717 |
+| Random Forest | 0,676 | 0,696 | 0,687 |
+| XGBoost | 0,699 | 0,694 | 0,685 |
 
-XGBoost est retenu pour le modèle final pour son meilleur compromis performance / latence / explicabilité (compatibilité native SHAP).
+Contrairement à l'intuition initiale (XGBoost favori), c'est la **régression logistique** qui obtient le meilleur ROC-AUC sur ce setup. Cela s'explique par la nature des features : un embedding CLIP de 768 dimensions est déjà construit pour être linéairement séparable (modèle contrastif), et un classifieur linéaire suffit. Les modèles à arbres souffrent de la haute dimensionnalité et de l'absence de feature scalaire dominante.
+
+La régression logistique est donc retenue pour le modèle image final. Pour le modèle multimodal (21 features seulement, dont des scores hétérogènes), XGBoost reste préféré car les interactions non-linéaires entre score image, features texte et features de cohérence apportent un gain mesurable.
 
 ## 4.3 Généralisation cross-générateur
 
 Le test cross-générateur est crucial car notre génération synthétique repose principalement sur SDXL Turbo. Si le modèle ne reconnaissait que la signature de SDXL Turbo, il serait inutile contre un fraudeur utilisant Midjourney ou Flux. Nous évaluons les performances par `generator_model` sur le test set :
 
-| Générateur | Volume test | ROC-AUC | F1 |
-|---|---|---|---|
-| Stable Diffusion 1.4 (CIFAKE) | [N] | [AUC] | [F1] |
-| Multi-générateurs (ArtiFact) | [N] | [AUC] | [F1] |
-| SDXL Turbo (notre génération) | [N] | [AUC] | [F1] |
-| Flux Schnell (cross-test) | [N] | [AUC] | [F1] |
+Comme chaque générateur produit uniquement des images d'une classe (label=1 pour les générateurs IA, label=0 pour les sources réelles), nous reportons un **taux de détection** plutôt qu'une AUC : pour les générateurs IA c'est le `recall_fake` (% d'images correctement classées comme synthétiques au seuil 0,5), pour le groupe `real` c'est le complément du taux de fausses alarmes (`1 − fpr_real`).
 
-**Lecture :** un écart de plus de 0,15 point d'AUC entre le générateur d'entraînement et le générateur cross-test indique un sur-apprentissage à la signature. Notre modèle présente un écart de [GAP] points, ce qui [VALIDE / INVALIDE / NUANCE] sa capacité de généralisation.
+| Générateur | Volume test | Score moyen | Taux de détection correcte |
+|---|---|---|---|
+| Stable Diffusion 1.4 (CIFAKE, vu en train) | 980 | 0,669 | **0,879** (recall fakes) |
+| ArtiFact "various" (multi-générateurs) | 510 | 0,444 | 0,296 (recall fakes) |
+| Wikimedia + photos réelles (`real`) | 1 759 | 0,406 | 0,684 (1 − fpr) |
+| **SDXL Turbo (notre génération domaine)** | **560** | **0,331** | **0,184** (recall fakes) |
+
+**Lecture :** le modèle image-seul atteint **88 % de détection sur SD 1.4** (générateur ancien présent en training) mais s'effondre à **18 % sur SDXL Turbo**, soit un écart de 0,70 point. Cette chute infirme catégoriquement une généralisation simple par signature pour les générateurs récents. Elle confirme deux points : (1) la signature visuelle spécifique de SDXL Turbo (surface lisse, palette saturée) est très différente de SD 1.4 (artefacts d'aliasing typiques des premiers modèles de diffusion) ; (2) sans signal complémentaire, un détecteur de génération anciennes ne protège pas contre la fraude moderne. La modalité texte introduite dans le pipeline multimodal compense cette limite (recall remonté à 0,92 sur domain_test, section 4.1).
 
 ## 4.4 Robustesse au bruit
 
@@ -296,49 +305,76 @@ L'image soumise par un assuré peut être compressée par le service de messager
 - **Compression JPEG** à qualités 95, 80, 60, 40, 20.
 - **Bruit gaussien** d'écart-type σ = 0, 0,02, 0,05, 0,10, 0,15 (en proportion de 255).
 
-Pour les images réelles, le score moyen reste stable jusqu'à JPEG 40 et σ ≤ 0,05 (variation < [VARIATION] points). Au-delà, la dégradation devient significative — point qui sera précisé en limites du modèle.
+**Compression JPEG** : le score moyen oscille entre 0,47 et 0,60 pour les images réelles, et entre 0,30 et 0,47 pour les synthétiques entre les qualités 95 et 40. À qualité 20, les deux distributions convergent autour de 0,47 — le modèle ne discrimine quasiment plus. Cette fragilité est attendue : la compression JPEG supprime les hautes fréquences qui portent une partie de la signature des générateurs.
+
+**Bruit gaussien** : pour les images réelles, le score reste stable autour de 0,5 quel que soit σ. Pour les images synthétiques, le score chute de 0,35 à 0,10 quand σ passe de 0,02 à 0,15. Ce comportement est paradoxal au premier regard mais révèle un mécanisme important : notre détecteur exploite principalement la **lissité anormale** de SDXL Turbo. Ajouter du bruit gaussien camoufle cette lissité et fait basculer la prédiction vers "réelle". Un fraudeur sophistiqué pourrait donc contourner la détection en post-traitant ses fakes avec un bruit léger (σ ≈ 0,05).
+
+[FIGURE : 06_reports/figures/sensibilite_robustesse.png]
+
+Cette double fragilité (compression et bruit) est documentée dans la littérature (Frank et al., 2020 ; Wang et al., 2020) et appelle deux contre-mesures pour une mise en production : (1) augmentation de données pendant le training avec compression JPEG aléatoire et bruit gaussien aléatoire, (2) ensemble avec un détecteur basé fréquences (FFT, DCT) plus robuste aux perturbations bas-niveau.
 
 ## 4.5 Ablation des familles de features
 
 Pour chaque famille de features, nous mesurons la perte de ROC-AUC obtenue en mettant ces features à zéro à l'inférence (sans ré-entraîner) :
 
-| Famille retirée | ROC-AUC | Δ vs modèle complet |
+| Famille retirée | ROC-AUC sur generic_test | Δ vs modèle complet |
 |---|---|---|
-| (aucune — référence) | [REF-AUC] | 0,000 |
-| CLIP (768-d) | [AUC-NO-CLIP] | [DELTA-CLIP] |
-| EXIF | [AUC-NO-EXIF] | [DELTA-EXIF] |
-| BLIP-2 | [AUC-NO-BLIP2] | [DELTA-BLIP2] |
-| LLaVA | [AUC-NO-LLAVA] | [DELTA-LLAVA] |
+| (aucune — référence) | 0,736 | 0,000 |
+| CLIP (768-d) | 0,500 | **−0,236** |
+| EXIF (2 flags) | 0,736 | 0,000 |
 
-**Interprétation :** CLIP est attendu comme la famille la plus critique. BLIP-2 et LLaVA apportent un complément, leur retrait dégrade modérément la performance — c'est ce gain marginal que mesure cette analyse.
+**Interprétation :** sans CLIP, l'AUC s'effondre au niveau du hasard (0,500). CLIP est donc la pierre angulaire absolue du modèle image. Le retrait des deux flags EXIF n'a en revanche **aucun effet mesurable**. Cette absence d'apport s'explique par la prévalence des images sans EXIF dans notre dataset : CIFAKE et ArtiFact sont des dérivés de CIFAR-10 (32×32 px sans métadonnées), Wikimedia compresse fréquemment au téléversement, SDXL Turbo ne produit aucun EXIF. La feature `exif_present` finit donc binaire-presque-constante et n'apporte pas d'information discriminante exploitable par le classifieur.
+
+**Limite de cette analyse :** les ablations BLIP-2 et LLaVA n'ont pas été conduites séparément dans ce notebook car le modèle évalué est `image_lite` qui n'inclut pas ces features. Sur la variante `full` du modèle image, BLIP-2 et LLaVA contribuent peu car leurs scores ne varient que sur le sous-ensemble domain_* (1 170 images sur 31 062), insuffisant pour faire émerger un signal robuste à l'échelle du training generic. C'est uniquement dans le **modèle multimodal**, entraîné sur les paires domaine, que les features LMM jouent pleinement leur rôle.
 
 ## 4.6 Courbe d'apprentissage
 
 L'ajout massif de données améliorerait-il les performances ? Nous ré-entraînons le modèle sur 5 %, 10 %, 20 %, 50 %, 75 % et 100 % du train set :
 
+| Fraction | n_train | ROC-AUC test |
+|---|---|---|
+| 5 % | 1 195 | 0,672 |
+| 10 % | 2 391 | 0,699 |
+| 20 % | 4 782 | 0,697 |
+| 50 % | 11 956 | 0,700 |
+| 75 % | 17 934 | 0,698 |
+| 100 % | 23 913 | 0,694 |
+
 [FIGURE : 06_reports/figures/sensibilite_learning_curve.png]
 
-La courbe atteint un plateau à partir de [VOLUME-PLATEAU] images. Au-delà, le gain par image supplémentaire devient marginal — l'effort d'acquisition n'est rentable que si les nouvelles images couvrent des **distributions absentes** (nouveaux générateurs, angles smartphone, etc.).
+La courbe atteint un plateau dès **2 400 images** d'entraînement. Au-delà, le gain par image supplémentaire est nul (variation < 0,005 sur l'AUC) et l'AUC redescend même légèrement à 100 % du train set, suggérant un soupçon de sur-ajustement aux conditions spécifiques de CIFAKE/ArtiFact. L'effort d'acquisition n'est rentable que si les nouvelles images couvrent des **distributions absentes** (nouveaux générateurs, angles smartphone, conditions de luminosité particulières) — ajouter plus du même type d'images ne déplace plus le modèle. La piste prioritaire pour améliorer la performance est donc un changement d'**architecture** (fine-tuning de CLIP, classifieur non-linéaire profond, features fréquentielles), pas un changement de volume.
 
 ## 4.7 Calibration des seuils
 
-Sur le validation set, la calibration automatique produit les seuils suivants (stratégie max recall @ precision ≥ 0,85) :
+Sur le validation set du modèle multimodal `lite` (n = 176 paires domain_val), la calibration automatique produit les seuils suivants (stratégie max recall sous contrainte precision ≥ 0,85) :
 
-- **seuil_low = [SEUIL-LOW]** : auto-validation des dossiers légitimes (95 % de pureté).
-- **seuil_mid = [SEUIL-MID]** : équilibre F1.
-- **seuil_high = [SEUIL-HIGH]** : alerte fraude (85 % de pureté).
+- **seuil_low = 0,051** : auto-validation des dossiers légitimes (95 % de pureté côté légitime).
+- **seuil_mid = 0,206** : seuil de bascule "à expertiser → fraude probable" (precision 0,853, recall 0,967, F1 0,906).
+- **seuil_high = 0,256** : alerte fraude (85 % de pureté côté fraude).
 
-Le diagramme de distribution des scores par classe (figure ci-dessous) montre la séparation atteinte par le modèle et la position des seuils retenus.
+Pour la variante `full` du multimodal, les seuils calibrés sont décalés vers le bas (mid = 0,114) car les features judge_* du LLM-as-judge produisent des scores plus tranchés. La performance opérationnelle est très proche : precision 0,853, recall 0,967, F1 0,906 également.
+
+Le diagramme de distribution des scores par classe (figure ci-dessous, illustration sur le modèle image lite calibré sur generic_val) montre la séparation atteinte et la position des seuils retenus.
 
 [FIGURE : 06_reports/figures/calibration_distribution_scores.png]
+[FIGURE : 06_reports/figures/calibration_roc_pr.png]
 
 ## 4.8 Interprétation métier des prédictions
 
-Les analyses SHAP (figure ci-dessous) confirment que les top features sont, dans l'ordre décroissant : [TOP-1], [TOP-2], [TOP-3], [TOP-4], [TOP-5]. Les composantes de l'embedding CLIP dominent en cumulé, ce qui valide le choix d'encodeur. Les scores LLaVA et les flags EXIF apportent un signal complémentaire identifiable individuellement.
+Les analyses SHAP (figure ci-dessous) montrent que les top features sont, dans l'ordre décroissant d'importance moyenne |SHAP| : `clip_417` (0,70), `clip_313` (0,69), `clip_625` (0,60), `clip_393` (0,59), `clip_84` (0,58). Aucune dimension CLIP ne domine isolément ; chaque feature pèse moins de 1 point en moyenne. Surtout, le bar plot révèle que la **somme de l'importance des 756 autres dimensions CLIP atteint 103,82**, soit deux ordres de grandeur au-dessus des features individuelles. Cette répartition est typique d'un modèle linéaire sur représentation dense : la décision est portée par le motif global de l'embedding plutôt que par une signature spécifique localisée. Les flags EXIF n'apparaissent pas dans le top 20, cohérent avec l'ablation (section 4.5) qui montre que leur contribution est nulle.
 
 [FIGURE : 06_reports/figures/shap_summary_top20.png]
+[FIGURE : 06_reports/figures/shap_bar_importance.png]
 
-L'occlusion sensitivity révèle que le modèle s'appuie principalement sur [ZONES-A-DECRIRE] dans les images synthétiques, ce qui est cohérent avec les artefacts connus des générateurs (textures sur-lisses, transitions floues, perspectives incorrectes).
+L'analyse SHAP *waterfall* sur un cas individuel à proba 0,999 (vraie fraude correctement détectée) montre que le score logit f(x) = 7,46 résulte d'une superposition de petites contributions : Feature 281 (+3,42), Feature 79 (−3,22), Feature 477 (+2,50), Feature 393 (−2,01), et 759 autres features cumulant +5,58. Aucune dimension à elle seule n'explique la décision, ce qui complique la traduction en termes métier mais reste cohérent avec un détecteur exploitant la statistique globale de l'image.
+
+[FIGURE : 06_reports/figures/shap_waterfall_cas_fraude.png]
+
+L'occlusion sensitivity (heatmap d'importance par patch glissant) révèle que le modèle s'appuie sur des zones étendues plutôt que sur des artefacts ponctuels : **régions centrales de l'image** où sont concentrés les objets et la texture des matériaux (sols, murs, mobilier), et **zones de transition** entre objets où les générateurs produisent souvent des bords flous ou incohérents. Sur les exemples illustrés (figure ci-dessous), l'image réelle d'architecture vernaculaire reçoit une heatmap diffuse mais centrée sur les toitures et la végétation, tandis que l'image synthétique de cuisine reçoit une heatmap fortement focalisée sur les surfaces réfléchissantes du sol stratifié, qui présentent une régularité atypique caractéristique de SDXL Turbo.
+
+[FIGURE : 06_reports/figures/occlusion_heatmap_exemples.png]
+
+Il est honnête de noter que les deux exemples illustrés correspondent à des **erreurs du modèle image-seul** : l'image réelle est classée à tort comme synthétique (score 0,78) et l'image synthétique est classée à tort comme réelle (score 0,30). Cette observation visuelle confirme la limite de l'image-seul sur SDXL Turbo et l'apport décisif du multimodal — qui, lui, classifie correctement ces deux cas grâce au signal textuel.
 
 # 5. Framework technique
 
@@ -351,7 +387,8 @@ L'occlusion sensitivity révèle que le modèle s'appuie principalement sur [ZON
 | LMM image | `transformers` BLIP-2, LLaVA-1.5-7B | Captions, scores VQA structurés |
 | LLM texte | Mistral-7B-Instruct-v0.3 (4-bit) | Génération synthétique + LLM-as-judge |
 | Génération SDXL | `diffusers` SDXL Turbo | Production des fakes habitation |
-| Classifieurs | scikit-learn LogReg, RandomForest, XGBoost 2.0 | Apprentissage supervisé léger |
+| Classifieur image | scikit-learn LogReg (L2) | Apprentissage supervisé léger sur embeddings CLIP |
+| Classifieur multimodal | XGBoost 2.0 | Combinaison non-linéaire score image + features texte |
 | Déséquilibre | `imbalanced-learn` SMOTE | Sur-échantillonnage minoritaire |
 | Explicabilité | `shap`, occlusion custom | SHAP global + local, heatmap image |
 | NER | spaCy `fr_core_news_md` | Extraction entités texte |
@@ -382,23 +419,35 @@ La variante `full` (avec BLIP-2, LLaVA, Mistral-judge) est exécutable en local 
 
 **Limite 1 — Définition opérationnelle du label "réel"**
 
-Nos images "réelles" sont des photographies authentiques de scènes diverses, mais ne sont pas issues de dossiers de sinistre réels validés par expert. Cette distinction est essentielle : le modèle apprend à reconnaître la signature des générateurs d'IA, pas l'authenticité d'un sinistre déclaré. La généralisation à de "vraies" photos d'assurés (smartphone, conditions variées, EXIF authentique) est testée sur le sous-ensemble `personal/` mais ce volume reste modeste.
+Nos images "réelles" sont des photographies authentiques de scènes diverses, mais ne sont pas issues de dossiers de sinistre réels validés par expert. Cette distinction est essentielle : le modèle apprend à reconnaître la signature des générateurs d'IA, pas l'authenticité d'un sinistre déclaré. La généralisation à de "vraies" photos d'assurés (smartphone, conditions variées, EXIF authentique) reste à valider, le sous-ensemble `personal/` n'ayant pas pu être collecté à un volume représentatif dans le temps imparti.
 
-**Limite 2 — Couverture des générateurs**
+**Limite 2 — Couverture des générateurs et chute sur SDXL Turbo**
 
-Le marché évolue extrêmement vite (~ 6 mois entre deux générateurs majeurs). Notre dataset couvre Stable Diffusion 1.4, SDXL, plusieurs modèles ArtiFact et un cross-test Flux. Un fraudeur utilisant Sora ou un futur modèle non vu en entraînement aura une signature potentiellement différente. La maintenance du modèle exige un cycle de réentraînement régulier.
+Le marché évolue extrêmement vite (~ 6 mois entre deux générateurs majeurs). Notre analyse cross-générateur (section 4.3) **quantifie** précisément cette limite : le modèle image-seul atteint 88 % de recall sur Stable Diffusion 1.4 (présent en training via CIFAKE) mais s'effondre à **18 % sur SDXL Turbo**. Un fraudeur utilisant Sora, Flux 1, ou un futur modèle aura une signature potentiellement très différente. La maintenance du modèle exige un cycle de réentraînement régulier (idéalement trimestriel) sur les nouveaux générateurs majeurs.
 
-**Limite 3 — Manipulations adversariales**
+**Limite 3 — Saturation rapide de l'apprentissage**
 
-Notre pipeline ne traite pas explicitement les attaques adversariales : image générée puis re-photographiée à l'écran, recompression itérative, retouches partielles d'une photo authentique. Ces cas relèvent d'autres approches (forensics passif, analyse de double compression JPEG).
+La courbe d'apprentissage (section 4.6) montre un plateau à partir de 2 400 images d'entraînement. Au-delà, l'AUC reste bloquée autour de 0,70. Cette saturation rapide indique que l'amélioration ne viendra pas de plus de données du même type, mais d'un changement d'**architecture** : fine-tuning de CLIP sur le domaine, classifieur non-linéaire profond, ou ajout de features de fréquence (FFT, DCT) sensibles aux artefacts spécifiques des modèles de diffusion modernes.
 
-**Limite 4 — Couverture catégorielle**
+**Limite 4 — Robustesse aux manipulations adversariales**
 
-Quatre catégories de sinistre sont couvertes. Une catégorie rare (foudre, dégât animal, sinistre technologique) sera mal classée. Un système de production exigerait une catégorisation amont et des modèles spécialisés.
+Notre analyse de robustesse (section 4.4) **mesure** une double fragilité du modèle image : (a) sous compression JPEG agressive (qualité < 40), les distributions de scores réels et synthétiques convergent ; (b) sous bruit gaussien, les images SDXL Turbo voient leur score chuter, révélant que le détecteur exploite principalement la lissité anormale de SDXL et qu'un bruit léger suffit à camoufler ce signal. Ces vulnérabilités sont documentées dans la littérature (Frank et al., 2020 ; Wang et al., 2020). Un fraudeur sophistiqué pourrait contourner le détecteur en post-traitant ses fakes (recompression itérative, ajout de bruit, capture d'écran). Ces attaques relèvent d'autres approches (forensics passif, analyse de double compression JPEG, ensembles de détecteurs hétérogènes).
 
-**Limite 5 — Texte synthétique**
+**Limite 5 — Couverture catégorielle**
 
-Nos déclarations textuelles d'entraînement sont générées par Mistral, pas écrites par de vrais assurés. Les patterns linguistiques peuvent diverger. La validation sur des déclarations réelles serait nécessaire en production.
+Quatre catégories de sinistre sont couvertes (eau, feu, vitre, vandalisme). Une catégorie rare (foudre, dégât animal, sinistre technologique) sera mal classée. Un système de production exigerait une catégorisation amont et des modèles spécialisés par catégorie.
+
+**Limite 6 — Appariement synthétique image+texte**
+
+Notre dataset multimodal apparie chaque image domaine avec un texte Mistral aléatoire de **même catégorie ET même label**. Cette stratégie simule un fraudeur cohérent qui aligne sa fausse image et son faux texte — c'est un cas favorable. Sur des données réelles non-corrélées (vraie photo + faux texte, ou inversement), le gain multimodal pourrait être plus modeste. Les chiffres rapportés section 4.1 (AUC 0,93) constituent donc un majorant des performances attendues en production.
+
+**Limite 7 — Texte synthétique**
+
+Nos déclarations textuelles d'entraînement sont générées par Mistral avec une consigne explicite d'introduire des incohérences subtiles dans les versions frauduleuses. Les patterns linguistiques peuvent diverger des vraies déclarations d'assurés (vocabulaire, niveau de langue, tournures régionales). La validation sur un corpus annoté de vraies déclarations sinistre/fraude serait nécessaire avant mise en production.
+
+**Limite 8 — EXIF non discriminant**
+
+L'ablation des features (section 4.5) montre que les flags EXIF (présence, GPS) n'apportent **aucun gain mesurable**. Cela s'explique par la prévalence d'images sans EXIF dans notre dataset (CIFAKE/ArtiFact dérivés de CIFAR-10, Wikimedia compressé au téléversement, SDXL ne produisant aucun EXIF). En production, l'EXIF dynamique (date de prise, modèle d'appareil) en cohérence avec les champs déclaratifs serait probablement plus utile que la simple présence/absence.
 
 ## 6.2 Limites techniques
 
