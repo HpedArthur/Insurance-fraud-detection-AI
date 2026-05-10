@@ -1,0 +1,46 @@
+{
+  "variant": "lite",
+  "metrics": [
+    {
+      "model": "mm_lite",
+      "split": "domain_val",
+      "n": 176,
+      "roc_auc": 0.9425595238095238,
+      "f1": 0.9,
+      "accuracy": 0.8636363636363636,
+      "confusion_matrix": [
+        [
+          44,
+          12
+        ],
+        [
+          12,
+          108
+        ]
+      ]
+    },
+    {
+      "model": "mm_lite",
+      "split": "domain_test",
+      "n": 585,
+      "roc_auc": 0.8959324324324324,
+      "f1": 0.905521472392638,
+      "accuracy": 0.8683760683760684,
+      "confusion_matrix": [
+        [
+          139,
+          46
+        ],
+        [
+          31,
+          369
+        ]
+      ]
+    }
+  ],
+  "comparison_image_only": {
+    "roc_auc": 0.39097297297297295,
+    "f1": 0.241635687732342,
+    "delta_auc_vs_multimodal": 0.5049594594594594
+  }
+}

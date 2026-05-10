@@ -34,7 +34,8 @@ ENV/
 !01_data/external/.gitkeep
 !01_data/synthetic/.gitkeep
 
-04_models/*
+04_models/*.joblib
+04_models/*.npy
 !04_models/.gitkeep
 *.parquet
 
@@ -55,7 +56,7 @@ desktop.ini
 *.swo
 
 # Outputs locaux
-06_reports/figures/*.png
+# 06_reports/figures/*.png
 06_reports/figures/*.pdf
 !06_reports/figures/.gitkeep
 

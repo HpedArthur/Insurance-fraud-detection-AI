@@ -1,0 +1,46 @@
+{
+  "variant": "full",
+  "metrics": [
+    {
+      "model": "mm_full",
+      "split": "domain_val",
+      "n": 176,
+      "roc_auc": 0.9641369047619048,
+      "f1": 0.9367088607594937,
+      "accuracy": 0.9147727272727273,
+      "confusion_matrix": [
+        [
+          50,
+          6
+        ],
+        [
+          9,
+          111
+        ]
+      ]
+    },
+    {
+      "model": "mm_full",
+      "split": "domain_test",
+      "n": 585,
+      "roc_auc": 0.9315135135135135,
+      "f1": 0.9048207663782447,
+      "accuracy": 0.8683760683760684,
+      "confusion_matrix": [
+        [
+          142,
+          43
+        ],
+        [
+          34,
+          366
+        ]
+      ]
+    }
+  ],
+  "comparison_image_only": {
+    "roc_auc": 0.3905135135135135,
+    "f1": 0.2513863216266174,
+    "delta_auc_vs_multimodal": 0.541
+  }
+}

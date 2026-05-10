@@ -1,0 +1,13 @@
+{
+  "low": 0.012019743212823864,
+  "mid": 0.857199143595693,
+  "high": 0.9071991435956931,
+  "strategy": "max_recall_at_precision",
+  "mid_metrics": {
+    "threshold": 0.857199143595693,
+    "precision": 0.85,
+    "recall": 0.0913364674278039,
+    "f1": 0.1649484536080722,
+    "min_precision_constraint": 0.85
+  }
+}
