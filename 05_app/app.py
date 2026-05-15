@@ -37,13 +37,20 @@ with st.sidebar:
     # --- Variante de modele ---
     with st.expander("Variante de modele : qu'est-ce que c'est ?", expanded=False):
         st.markdown(
-            "**Lite** (defaut) : utilise CLIP + EXIF + features texte simples.\n"
-            "Rapide (~5s par dossier), tourne sans GPU. C'est ce qui sera deploye.\n\n"
-            "**Full** : ajoute BLIP-2, LLaVA et Mistral pour une analyse plus fine.\n"
-            "Plus precis mais necessite une GPU avec ~12 Go de VRAM."
+            "**Lite** : utilise CLIP + EXIF + features texte handcrafted.\n"
+            "Rapide (~5s par dossier), tourne sans GPU.\n\n"
+            "**Full** : ajoute BLIP-2, LLaVA (LMM image) et Mistral-7B (LLM-as-judge texte)\n"
+            "pour une analyse multimodale enrichie.\n"
+            "Necessite GPU ~12 Go de VRAM (Colab T4/L4/A100, ou serveur local GPU)."
         )
     variant = st.radio("Variante", options=["lite", "full"], index=0, horizontal=True,
                        label_visibility="collapsed")
+    full_available = (ROOT / "04_models" / "image_model_full.joblib").exists()
+    if variant == "full" and not full_available:
+        st.info(
+            "Variante **full** selectionnee mais modeles full absents localement. "
+            "Lance d'abord : `python 03_src/models/train_image_model.py --variant full`."
+        )
 
     st.markdown("---")
 
@@ -183,10 +190,17 @@ if not st.session_state["submitted"]:
             location = st.text_input("Piece concernee", value="Salon")
             present = st.radio("Etiez-vous present au moment du sinistre ?", ["Oui", "Non"], horizontal=True)
 
-        circumstances = st.text_area("Circonstances detaillees", value="", height=160,
-            help="Decrivez precisement ce qui s'est passe. 500 caracteres recommandes.",
-            placeholder="Ex : Je suis rentre du travail vers 19h. En entrant dans le salon, j'ai constate une flaque d'eau...")
-        cause = st.text_input("Origine probable du sinistre", value="")
+        default_circumstances = (
+            "Je suis rentre du travail vers 19h. En entrant dans le salon, j'ai constate "
+            "une importante fuite provenant du plafond, probablement due au degat des eaux "
+            "de l'appartement du dessus. L'eau avait deja imbibe le canape, le tapis et "
+            "endommage le parquet. J'ai immediatement coupe l'electricite par precaution "
+            "et contacte mon voisin du dessus ainsi que le syndic."
+        )
+        circumstances = st.text_area("Circonstances detaillees", value=default_circumstances, height=160,
+            help="Decrivez precisement ce qui s'est passe. 500 caracteres recommandes. "
+                 "Un texte vide reduit la qualite de l'analyse multimodale.")
+        cause = st.text_input("Origine probable du sinistre", value="Fuite plomberie voisin du dessus")
 
         st.markdown("### 4. Estimation et objets endommages")
         c1, c2 = st.columns(2)
@@ -194,23 +208,29 @@ if not st.session_state["submitted"]:
             amount = st.number_input("Montant estime des dommages (EUR)",
                                       min_value=0, max_value=500000, value=2500, step=100)
         with c2:
-            damaged_items = st.text_area("Objets endommages (un par ligne)", value="", height=100,
+            damaged_items = st.text_area("Objets endommages (un par ligne)",
+                value="Canape 3 places (achete 2022, ~1200 EUR)\nTapis salon (~250 EUR)\nParquet stratifie 15 m2",
+                height=100,
                 placeholder="Canape (achete 2022, ~1200 EUR)\nTele 55 pouces\nTapis salon")
 
         st.markdown("### 5. Tiers et temoins")
+        st.caption("Cochez si applicable. Les champs texte restent saisissables dans tous les cas.")
         c1, c2 = st.columns(2)
         with c1:
             third_party = st.checkbox("Tiers responsable identifie")
-            third_party_info = st.text_input("Coordonnees du tiers", disabled=not third_party)
+            third_party_info = st.text_input("Coordonnees du tiers",
+                                              placeholder="Nom, telephone, assureur si connu...")
         with c2:
             witness = st.checkbox("Temoin present")
-            witness_info = st.text_input("Coordonnees du temoin", disabled=not witness)
+            witness_info = st.text_input("Coordonnees du temoin",
+                                          placeholder="Nom, telephone du temoin...")
 
         st.markdown("### 6. Mesures conservatoires et autorites")
         c1, c2 = st.columns(2)
         with c1:
             authorities = st.checkbox("Pompiers / police / gendarmerie sont intervenus")
-            pv_number = st.text_input("Numero de PV ou main courante", disabled=not authorities)
+            pv_number = st.text_input("Numero de PV ou main courante",
+                                       placeholder="Ex : PV n 2026-04-15-001234")
         with c2:
             measures = st.text_area("Mesures d'urgence prises", value="",
                 placeholder="Ex : coupure eau, bachage du toit, contact syndic...", height=100)

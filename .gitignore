@@ -34,9 +34,10 @@ ENV/
 !01_data/external/.gitkeep
 !01_data/synthetic/.gitkeep
 
-04_models/*.joblib
 04_models/*.npy
 !04_models/.gitkeep
+# Les .joblib (image_model, multimodal_model) sont legers (~400 KB) et autorises
+# pour permettre la demo Colab sans transit Drive/HF Hub
 *.parquet
 
 # Secrets
