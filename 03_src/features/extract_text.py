@@ -142,17 +142,39 @@ def handcrafted_features(text: str, nlp=None) -> dict:
 # ============================================================
 
 def load_judge(device: str = None):
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    """Charge Mistral-7B-Instruct pour le LLM-as-judge.
+
+    Strategie de chargement :
+    - sur GPU : 4-bit via bitsandbytes en priorite (gain VRAM). Fallback automatique en fp16
+      si bitsandbytes est casse (cas connu Colab Python 3.12 + CUDA 12.8, triton.ops absent).
+    - sur CPU : fp32 (lent mais marche).
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Chargement Mistral-7B (judge), device=%s", device)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+
     if device == "cuda":
-        bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
-                                 bnb_4bit_quant_type="nf4")
-        model = AutoModelForCausalLM.from_pretrained(MODEL_ID, quantization_config=bnb, device_map="auto")
+        model = None
+        # Tentative 4-bit via bitsandbytes
+        try:
+            from transformers import BitsAndBytesConfig
+            bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
+                                     bnb_4bit_quant_type="nf4")
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID, quantization_config=bnb, device_map="auto",
+            )
+            logger.info("Mistral charge en 4-bit (bitsandbytes).")
+        except Exception as e:
+            logger.warning("Echec chargement 4-bit (%s) -> fallback fp16.", e)
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_ID, torch_dtype=torch.float16, device_map="auto",
+            )
+            logger.info("Mistral charge en fp16 (sans bitsandbytes).")
     else:
         model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32).to(device)
+
     model.eval()
     return model, tokenizer
 

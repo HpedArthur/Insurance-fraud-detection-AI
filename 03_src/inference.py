@@ -259,25 +259,41 @@ class FraudDetector:
         if self._llava is not None or not self.load_lmm_flag:
             return
         try:
-            from transformers import AutoProcessor, BitsAndBytesConfig, LlavaForConditionalGeneration
+            from transformers import AutoProcessor, LlavaForConditionalGeneration
             logger.info("Chargement LLaVA-1.5-7B...")
             self._llava_proc = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf")
-            kwargs: dict = {"torch_dtype": self.torch.float32}
-            if self.device == "cuda":
-                kwargs = {
-                    "quantization_config": BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=self.torch.float16,
-                        bnb_4bit_quant_type="nf4",
-                    ),
-                    "device_map": "auto",
-                }
-            self._llava = LlavaForConditionalGeneration.from_pretrained(
-                "llava-hf/llava-1.5-7b-hf", **kwargs
-            ).eval()
+
+            if self.device != "cuda":
+                self._llava = LlavaForConditionalGeneration.from_pretrained(
+                    "llava-hf/llava-1.5-7b-hf", torch_dtype=self.torch.float32,
+                ).eval()
+                return
+
+            # Sur GPU : on tente 4-bit (gain VRAM, indispensable pour cohabiter avec BLIP-2 + Mistral).
+            # Si bitsandbytes est casse (bug Colab Python 3.12 + CUDA 12.8 / triton.ops), on
+            # desactive LLaVA pour laisser la place a Mistral en fp16. BLIP-2 (fp16, sans bnb)
+            # reste actif et fournit deja 3 scores VQA forensiques.
+            try:
+                from transformers import BitsAndBytesConfig
+                bnb = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=self.torch.float16,
+                    bnb_4bit_quant_type="nf4",
+                )
+                self._llava = LlavaForConditionalGeneration.from_pretrained(
+                    "llava-hf/llava-1.5-7b-hf",
+                    quantization_config=bnb, device_map="auto",
+                ).eval()
+                logger.info("LLaVA charge en 4-bit (bitsandbytes).")
+            except Exception as e:
+                logger.warning(
+                    "bitsandbytes indisponible (%s). LLaVA desactive pour ne pas saturer "
+                    "la VRAM lorsque Mistral est charge en fp16. BLIP-2 reste actif.", e,
+                )
+                self._llava = None
         except Exception as e:
             logger.warning("Echec chargement LLaVA : %s -- mode degrade", e)
-            self.load_lmm_flag = False
+            self._llava = None
 
     @staticmethod
     def _vqa_yes_proba_blip2(model, processor, image, question: str, device: str, torch) -> float:
