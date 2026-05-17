@@ -258,39 +258,25 @@ class FraudDetector:
     def _ensure_llava(self):
         if self._llava is not None or not self.load_lmm_flag:
             return
+
+        # Sur GPU contraint (ex : Colab L4 24 Go), LLaVA pose deux problemes :
+        #   1) son inference echoue souvent (dtype mismatch fp16/fp32 avec bitsandbytes)
+        #   2) sa presence en VRAM empeche Mistral fp16 de tenir entierement, ce qui
+        #      provoque un CPU offload et rend l'inference 30-50x plus lente.
+        # On le desactive donc volontairement sur cuda. BLIP-2 (fp16, leger) fournit
+        # deja 3 scores VQA forensiques. Les scores llava_* restent a 0,5 (defaut).
+        if self.device == "cuda":
+            logger.info("LLaVA volontairement desactive sur GPU pour cohabiter avec BLIP-2 + Mistral fp16.")
+            self._llava = None
+            return
+
         try:
             from transformers import AutoProcessor, LlavaForConditionalGeneration
             logger.info("Chargement LLaVA-1.5-7B...")
             self._llava_proc = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf")
-
-            if self.device != "cuda":
-                self._llava = LlavaForConditionalGeneration.from_pretrained(
-                    "llava-hf/llava-1.5-7b-hf", torch_dtype=self.torch.float32,
-                ).eval()
-                return
-
-            # Sur GPU : on tente 4-bit (gain VRAM, indispensable pour cohabiter avec BLIP-2 + Mistral).
-            # Si bitsandbytes est casse (bug Colab Python 3.12 + CUDA 12.8 / triton.ops), on
-            # desactive LLaVA pour laisser la place a Mistral en fp16. BLIP-2 (fp16, sans bnb)
-            # reste actif et fournit deja 3 scores VQA forensiques.
-            try:
-                from transformers import BitsAndBytesConfig
-                bnb = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=self.torch.float16,
-                    bnb_4bit_quant_type="nf4",
-                )
-                self._llava = LlavaForConditionalGeneration.from_pretrained(
-                    "llava-hf/llava-1.5-7b-hf",
-                    quantization_config=bnb, device_map="auto",
-                ).eval()
-                logger.info("LLaVA charge en 4-bit (bitsandbytes).")
-            except Exception as e:
-                logger.warning(
-                    "bitsandbytes indisponible (%s). LLaVA desactive pour ne pas saturer "
-                    "la VRAM lorsque Mistral est charge en fp16. BLIP-2 reste actif.", e,
-                )
-                self._llava = None
+            self._llava = LlavaForConditionalGeneration.from_pretrained(
+                "llava-hf/llava-1.5-7b-hf", torch_dtype=self.torch.float32,
+            ).eval()
         except Exception as e:
             logger.warning("Echec chargement LLaVA : %s -- mode degrade", e)
             self._llava = None
@@ -317,10 +303,6 @@ class FraudDetector:
 
         Si load_lmm=False (mode lite, CPU) : renvoie 0.5 partout (neutre).
         Sinon, charge les modeles a la volee et calcule les VRAIS scores.
-
-        Returns dict avec :
-          blip2_score_real / blip2_score_ai / blip2_score_artifact (0/0.5/1)
-          llava_score_real / llava_score_artifact / llava_score_coherence (0..1)
         """
         out = {
             "blip2_score_real": 0.5, "blip2_score_ai": 0.5, "blip2_score_artifact": 0.5,
@@ -361,6 +343,7 @@ class FraudDetector:
                 logger.warning("LLaVA a echoue : %s", e)
 
         return out
+
 
     # =========================================================================
     # Texte
@@ -477,9 +460,7 @@ class FraudDetector:
     # =========================================================================
 
     def score_image_only(self, image, _skip_lmm: bool = True) -> float:
-        """Renvoie uniquement le score image.
-        Pour l'occlusion sensitivity, on skip BLIP-2/LLaVA car leur cout ferait
-        exploser le temps de calcul (heatmap = 100+ appels)."""
+        """Renvoie uniquement le score image."""
         if self.image_model_pkg is None:
             raise RuntimeError("Aucun modele image charge.")
         clip_emb = self.encode_image_clip(image)
@@ -505,13 +486,8 @@ class FraudDetector:
     # =========================================================================
 
     def explain_image(self, image, patch_size: int = 56, stride: int = 28) -> dict:
-        """Calcule une heatmap d'occlusion sur l'image.
-
-        L'heatmap est dans [0, 1] : plus rouge = zone qui contribue le plus au score.
-        L'occlusion sensitivity skip BLIP-2/LLaVA pour rester dans des temps raisonnables.
-        """
+        """Calcule une heatmap d'occlusion sur l'image."""
         from utils.explain import occlusion_heatmap, overlay_heatmap
-        # On utilise score_image_only avec skip_lmm pour la rapidite
         scorer = lambda img: self.score_image_only(img, _skip_lmm=True)
         base_score = scorer(image)
         heatmap = occlusion_heatmap(image, scorer, patch_size=patch_size, stride=stride)
